@@ -3,3 +3,4 @@
 .runtime_data
 *.swp
 playground/
+.idea/
