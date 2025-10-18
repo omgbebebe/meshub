@@ -1,4 +1,4 @@
-[sources.mqtt]
+[sources.mqtt_meshtastic]
 type = "mqtt"
 host = "mqtt.meshtastic.org"
 topic = "msh/RU/SAR/#"
@@ -9,9 +9,20 @@ decoding.codec = "protobuf"
 decoding.protobuf.desc_file = "meshtastic.binpb"
 decoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
 
+[sources.mqtt_sarmesh]
+type = "mqtt"
+host = "192.168.0.137"
+topic = "msh/RU/SAR/#"
+#topic = "msh/RU/#"
+user = "sarmesh"
+password = "s3cr3t"
+decoding.codec = "protobuf"
+decoding.protobuf.desc_file = "meshtastic.binpb"
+decoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
 [transforms.message]
 type = "exclusive_route"
-inputs = [ "mqtt" ]
+inputs = [ "mqtt_meshtastic", "mqtt_sarmesh" ]
 [[transforms.message.routes]]
 name = "decoded"
 condition = "exists(.packet.decoded)"
@@ -66,14 +77,25 @@ del(.packet.encr)
 del(.packet.nonce)
 """
 
-[sinks.meshtastic2nats]
-inputs = [ "mqtt" ]
+[sinks.meshtastic2sarmesh]
+inputs = [ "mqtt_meshtastic" ]
 type = "mqtt"
 host = "localhost"
 topic = "{{ .topic }}"
 #encoding.codec = "raw_message"
 user = "meshdev"
 password = "s3cr3t"
+encoding.codec = "protobuf"
+encoding.protobuf.desc_file = "meshtastic.binpb"
+encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[sinks.sarmesh2meshtastic]
+inputs = [ "mqtt_sarmesh" ]
+type = "mqtt"
+host = "mqtt.meshtastic.org"
+user = "meshdev"
+password = "large4cats"
+topic = "{{ .topic }}"
 encoding.codec = "protobuf"
 encoding.protobuf.desc_file = "meshtastic.binpb"
 encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
