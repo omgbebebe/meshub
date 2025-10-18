@@ -24,4 +24,4 @@ devenv up # to fire up all services
 
 If you have any question or suggestion please use an issue tracker of this project.
 
-Russian-language chat is also available at [Zulip channel](https://morze.zulipchat.com/#narrow/channel/537802-meshub)
+Russian-language chat is also available at [Zulip channel](https://sarmesh.zulipchat.com/#narrow/channel/537804-meshub)
