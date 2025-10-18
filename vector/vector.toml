@@ -1,0 +1,86 @@
+[sources.mqtt]
+type = "mqtt"
+host = "mqtt.meshtastic.org"
+topic = "msh/RU/SAR/#"
+#topic = "msh/RU/#"
+user = "meshdev"
+password = "large4cats"
+decoding.codec = "protobuf"
+decoding.protobuf.desc_file = "meshtastic.binpb"
+decoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[transforms.message]
+type = "exclusive_route"
+inputs = [ "mqtt" ]
+[[transforms.message.routes]]
+name = "decoded"
+condition = "exists(.packet.decoded)"
+[[transforms.message.routes]]
+name = "encrypted"
+condition = "exists(.packet.encrypted)"
+
+[transforms.calc_nonce]
+type = "lua"
+inputs = [ "message.encrypted" ]
+version = "2"
+source = """
+require('lua/base64')
+require('lua/hex2bytes')
+function process(event, emit)
+  event.log.packet.nonce = base64_encode(hex2bytes(string.format("%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",string.byte(string.pack("<I8I8", event.log.packet.id, event.log.packet.from), 1,16))))
+  event.log.packet.encr = base64_encode(event.log.packet.encrypted)
+  emit(event)
+end
+"""
+
+[transforms.calc_nonce.hooks]
+process = "process"
+
+[transforms.decrypt]
+type = "remap"
+inputs = [ "calc_nonce" ]
+source = """
+key = decode_base64!("1PG7OiApB1nwvP+rz05pAQ==")
+iv = .packet.nonce
+if exists(.packet.encrypted) {
+  #data, err = decrypt(ciphertext, "AES-128-CTR", key, iv: decode_base64!(iv))
+  .packet.decrypted = encode_base64(decrypt!(decode_base64!(.packet.encr), "AES-128-CTR-BE", key, iv: decode_base64!(iv)))
+}
+"""
+
+[transforms.proto_parse]
+type = "remap"
+inputs = [ "decrypt" ]
+source = """
+data = decode_base64!(.packet.decrypted)
+.packet.decoded = parse_proto!(data, "meshtastic.binpb", "meshtastic.Data")
+"""
+
+[transforms.cleanup]
+type = "remap"
+inputs = [ "proto_parse", "message.decoded"]
+source = """
+del(.packet.encrypted)
+del(.packet.decrypted)
+del(.packet.encr)
+del(.packet.nonce)
+"""
+
+[sinks.meshtastic2nats]
+inputs = [ "mqtt" ]
+type = "mqtt"
+host = "localhost"
+topic = "{{ .topic }}"
+#encoding.codec = "raw_message"
+user = "meshdev"
+password = "s3cr3t"
+encoding.codec = "protobuf"
+encoding.protobuf.desc_file = "meshtastic.binpb"
+encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[sinks.stdout]
+#inputs = ["mqtt"]
+#inputs = ["proto_parse"]
+inputs = ["cleanup"]
+type = "console"
+encoding.codec = "json"
