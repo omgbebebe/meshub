@@ -1,8 +1,9 @@
+# gather messages from sources
 [sources.mqtt_meshtastic]
 type = "mqtt"
 host = "mqtt.meshtastic.org"
 topic = "msh/RU/SAR/#"
-#topic = "msh/RU/#"
+#topic = "msh/RU/SAR/2/e/LongFast/#"
 user = "meshdev"
 password = "large4cats"
 decoding.codec = "protobuf"
@@ -13,72 +14,79 @@ decoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
 type = "mqtt"
 host = "192.168.0.137"
 topic = "msh/RU/SAR/#"
-#topic = "msh/RU/#"
+#topic = "msh/RU/SAR/2/e/LongFast/#"
 user = "sarmesh"
 password = "s3cr3t"
 decoding.codec = "protobuf"
 decoding.protobuf.desc_file = "meshtastic.binpb"
 decoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
 
-[transforms.message]
-type = "exclusive_route"
-inputs = [ "mqtt_meshtastic", "mqtt_sarmesh" ]
-[[transforms.message.routes]]
-name = "decoded"
-condition = "exists(.packet.decoded)"
-[[transforms.message.routes]]
-name = "encrypted"
-condition = "exists(.packet.encrypted)"
+[sources.sarmesh_bucket]
+type = "nats"
+connection_name = "vector"
+subject = "sarmesh.bucket"
+url = "nats://192.168.0.137:5221"
+auth.strategy = "token"
+auth.token.value = "s3cr3t"
 
-[transforms.calc_nonce]
-type = "lua"
-inputs = [ "message.encrypted" ]
-version = "2"
-source = """
-require('lua/base64')
-require('lua/hex2bytes')
-function process(event, emit)
-  event.log.packet.nonce = base64_encode(hex2bytes(string.format("%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",string.byte(string.pack("<I8I8", event.log.packet.id, event.log.packet.from), 1,16))))
-  event.log.packet.encr = base64_encode(event.log.packet.encrypted)
-  emit(event)
-end
-"""
-
-[transforms.calc_nonce.hooks]
-process = "process"
-
-[transforms.decrypt]
+# mark message source
+[transforms.mark_source_meshtastic]
 type = "remap"
-inputs = [ "calc_nonce" ]
-source = """
-key = decode_base64!("1PG7OiApB1nwvP+rz05pAQ==")
-iv = .packet.nonce
-if exists(.packet.encrypted) {
-  #data, err = decrypt(ciphertext, "AES-128-CTR", key, iv: decode_base64!(iv))
-  .packet.decrypted = encode_base64(decrypt!(decode_base64!(.packet.encr), "AES-128-CTR-BE", key, iv: decode_base64!(iv)))
-}
-"""
-
-[transforms.proto_parse]
-type = "remap"
-inputs = [ "decrypt" ]
-source = """
-data = decode_base64!(.packet.decrypted)
-.packet.decoded = parse_proto!(data, "meshtastic.binpb", "meshtastic.Data")
-"""
-
-[transforms.cleanup]
-type = "remap"
-inputs = [ "proto_parse", "message.decoded"]
-source = """
-del(.packet.encrypted)
-del(.packet.decrypted)
-del(.packet.encr)
-del(.packet.nonce)
-"""
-
-[sinks.meshtastic2sarmesh]
 inputs = [ "mqtt_meshtastic" ]
+source = """
+.source = "meshtastic"
+"""
+[transforms.mark_source_sarmesh]
+type = "remap"
+inputs = [ "mqtt_sarmesh" ]
+source = """
+.source = "sarmesh"
+"""
+
+# calc message digest
+[transforms.calc_digest]
+type = "remap"
+inputs = [ "mark_source_meshtastic", "mark_source_sarmesh" ]
+source = """
+.packet_md5 = md5(encode_json(.packet))
+"""
+
+# dedupe bucket messages
+[transforms.bucket_dedupe]
+type = "dedupe"
+inputs = [ "calc_digest" ]
+fields.match = [ "from", "topic", "packet_md5" ]
+time_settings.max_age_ms = 60000
+
+
+# put messages from external resources to the sarmesh bucket
+[sinks.bucket]
+inputs = [ "bucket_dedupe" ]
+type = "nats"
+connection_name = "vector"
+subject = "sarmesh.bucket"
+url = "nats://192.168.0.137:5221"
+auth.strategy = "token"
+auth.token.value = "s3cr3t"
+encoding.codec = "json"
+
+# pull messages from bucket which source is external
+[transforms.bucket_messages]
+type = "exclusive_route"
+inputs = [ "sarmesh_bucket" ]
+[[transforms.bucket_messages.routes]]
+name = "external"
+condition = """
+.source != "sarmesh"
+"""
+[[transforms.bucket_messages.routes]]
+name = "sarmesh"
+condition = """
+.source == "sarmesh"
+"""
+
+[sinks.bucket2sarmesh]
+inputs = [ "bucket_messages.external" ]
 type = "mqtt"
 host = "localhost"
 topic = "{{ .topic }}"
@@ -89,8 +97,9 @@ encoding.codec = "protobuf"
 encoding.protobuf.desc_file = "meshtastic.binpb"
 encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
 
+# push sarmesh messages to the meshstatic
 [sinks.sarmesh2meshtastic]
-inputs = [ "mqtt_sarmesh" ]
+inputs = [ "bucket_messages.sarmesh" ]
 type = "mqtt"
 host = "mqtt.meshtastic.org"
 user = "meshdev"
@@ -100,9 +109,121 @@ encoding.codec = "protobuf"
 encoding.protobuf.desc_file = "meshtastic.binpb"
 encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
 
+#[transforms.message]
+#type = "exclusive_route"
+#inputs = [ "sarmesh_source", "meshtastic_source" ]
+#[[transforms.message.routes]]
+#name = "decoded"
+#condition = "exists(.packet.decoded)"
+#[[transforms.message.routes]]
+#name = "encrypted"
+#condition = "exists(.packet.encrypted)"
+#
+#[transforms.calc_nonce]
+#type = "lua"
+#inputs = [ "message.encrypted" ]
+#version = "2"
+#source = """
+#require('lua/base64')
+#require('lua/hex2bytes')
+#function process(event, emit)
+#  event.log.packet.nonce = base64_encode(hex2bytes(string.format("%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X",string.byte(string.pack("<I8I8", event.log.packet.id, event.log.packet.from), 1,16))))
+#  event.log.packet.encr = base64_encode(event.log.packet.encrypted)
+#  emit(event)
+#end
+#"""
+#
+#[transforms.calc_nonce.hooks]
+#process = "process"
+#
+#[transforms.decrypt]
+#type = "remap"
+#inputs = [ "calc_nonce" ]
+#source = """
+#key = decode_base64!("1PG7OiApB1nwvP+rz05pAQ==")
+#iv = .packet.nonce
+#if exists(.packet.encrypted) {
+#  #data, err = decrypt(ciphertext, "AES-128-CTR", key, iv: decode_base64!(iv))
+#  .packet.decrypted = encode_base64(decrypt!(decode_base64!(.packet.encr), "AES-128-CTR-BE", key, iv: decode_base64!(iv)))
+#}
+#"""
+#
+#[transforms.proto_parse]
+#type = "remap"
+#inputs = [ "decrypt" ]
+#source = """
+#data = decode_base64!(.packet.decrypted)
+#.packet.decoded = parse_proto!(data, "meshtastic.binpb", "meshtastic.Data")
+#"""
+#
+#[transforms.cleanup]
+#type = "remap"
+#inputs = [ "proto_parse", "message.decoded"]
+#source = """
+#del(.packet.encrypted)
+#del(.packet.decrypted)
+#del(.packet.encr)
+#del(.packet.nonce)
+#"""
+#
+#[transforms.mqtt_out]
+#type = "exclusive_route"
+#inputs = [ "cleanup" ]
+#[[transforms.mqtt_out.routes]]
+#name = "sarmesh"
+#condition = """
+#.source == "sarmesh"
+#"""
+#[[transforms.mqtt_out.routes]]
+#name = "meshtastic"
+#condition = """
+#.source == "meshtastic"
+#"""
+#
+#[transforms.sarmesh_cleanup]
+#type = "remap"
+#inputs = [ "mqtt_out.sarmesh" ]
+#source = """
+#del(.source)
+#.packet_md5 = md5(encode_json(.packet))
+#.source = "sarmesh"
+#"""
+#
+#[transforms.meshtastic_cleanup]
+#type = "remap"
+#inputs = [ "mqtt_out.meshtastic" ]
+#source = """
+#del(.source)
+#.packet_md5 = md5(encode_json(.packet))
+#.source = "meshtastic"
+#"""
+#
+##[sinks.meshtastic2sarmesh]
+##inputs = [ "meshtastic_cleanup" ]
+##type = "mqtt"
+##host = "localhost"
+##topic = "{{ .topic }}"
+##encoding.codec = "raw_message"
+##user = "meshdev"
+##password = "s3cr3t"
+##encoding.codec = "protobuf"
+##encoding.protobuf.desc_file = "meshtastic.binpb"
+##encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+#
+#
+#[sinks.sarmesh2bucket]
+#inputs = [ "sarmesh_bucket_dedupe" ]
+#type = "nats"
+#connection_name = "vector"
+#subject = "sarmesh.bucket"
+#url = "nats://192.168.0.137:5221"
+#auth.strategy = "token"
+#auth.token.value = "s3cr3t"
+#encoding.codec = "json"
+#
 [sinks.stdout]
-#inputs = ["mqtt"]
-#inputs = ["proto_parse"]
-inputs = ["cleanup"]
+#inputs = ["bucket_dedupe"]
+#inputs = ["bucket_messages.external"]
+inputs = ["bucket_unwrapped" ]
 type = "console"
 encoding.codec = "json"

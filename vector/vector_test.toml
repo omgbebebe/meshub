@@ -1,0 +1,133 @@
+# gather messages from sources
+[sources.mqtt_sarmesh_raw]
+type = "mqtt"
+host = "192.168.0.137"
+topic = "msh/RU/SAR/#"
+user = "sarmesh"
+password = "s3cr3t"
+decoding.codec = "protobuf"
+decoding.protobuf.desc_file = "meshtastic.binpb"
+decoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[sources.mqtt_meshtastic_raw]
+type = "mqtt"
+host = "mqtt.meshtastic.org"
+topic = "msh/RU/SAR/#"
+user = "meshdev"
+password = "large4cats"
+decoding.codec = "protobuf"
+decoding.protobuf.desc_file = "meshtastic.binpb"
+decoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[transforms.mqtt_sarmesh]
+type = "remap"
+inputs = [ "mqtt_sarmesh_raw" ]
+source = """
+.source = "sarmesh"
+"""
+
+[transforms.mqtt_meshtastic]
+type = "remap"
+inputs = [ "mqtt_meshtastic_raw" ]
+source = """
+.source = "meshtastic"
+"""
+
+[transforms.mqtt_message]
+type = "remap"
+inputs = [ "mqtt_sarmesh", "mqtt_meshtastic" ]
+source = """
+message = encode_proto!(.packet, "meshtastic.binpb", "meshtastic.ServiceEnvelope")
+.message_b64 = encode_base64(message)
+.message_md5 = md5(message)
+if !exists(.from) {
+  .from = .packet.from
+}
+if !exists(.to) {
+  .to = .packet.to
+}
+"""
+
+[transforms.deduped_message]
+type = "dedupe"
+inputs = [ "mqtt_message" ]
+fields.match = [ "from", "topic", "message_md5" ]
+time_settings.max_age_ms = 60000
+
+[sinks.bucket]
+inputs = [ "deduped_message" ]
+type = "nats"
+connection_name = "vector"
+subject = "sarmesh.bucket"
+url = "nats://192.168.0.137:5221"
+auth.strategy = "token"
+auth.token.value = "s3cr3t"
+encoding.codec = "raw_message"
+
+[transforms.bucket_messages]
+type = "exclusive_route"
+inputs = [ "deduped_message" ]
+[[transforms.bucket_messages.routes]]
+name = "external"
+condition = """
+.source != "sarmesh"
+"""
+[[transforms.bucket_messages.routes]]
+name = "sarmesh"
+condition = """
+.source == "sarmesh"
+"""
+
+[sinks.bucket2sarmesh]
+inputs = [ "bucket_messages.external" ]
+type = "mqtt"
+host = "localhost"
+topic = "{{ .topic }}"
+quality_of_service = "atmostonce"
+user = "meshdev"
+password = "s3cr3t"
+encoding.codec = "protobuf"
+encoding.protobuf.desc_file = "meshtastic.binpb"
+encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[sinks.sarmesh2meshtastic]
+inputs = [ "bucket_messages.sarmesh" ]
+type = "mqtt"
+host = "mqtt.meshtastic.org"
+topic = "{{ .topic }}"
+quality_of_service = "atmostonce"
+user = "meshdev"
+password = "large4cats"
+encoding.codec = "protobuf"
+encoding.protobuf.desc_file = "meshtastic.binpb"
+encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[sinks.sarmesh2liamcottle]
+inputs = [ "bucket_messages.sarmesh" ]
+type = "mqtt"
+host = "mqtt.meshtastic.liamcottle.net"
+topic = "{{ .topic }}"
+quality_of_service = "atmostonce"
+user = "uplink"
+password = "uplink"
+encoding.codec = "protobuf"
+encoding.protobuf.desc_file = "meshtastic.binpb"
+encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[sinks.sarmesh2onemesh]
+inputs = [ "bucket_messages.sarmesh" ]
+type = "mqtt"
+host = "mqtt.onemesh.ru"
+topic = "{{ .topic }}"
+quality_of_service = "atmostonce"
+user = "onemesh"
+password = "onecat"
+encoding.codec = "protobuf"
+encoding.protobuf.desc_file = "meshtastic.binpb"
+encoding.protobuf.message_type = "meshtastic.ServiceEnvelope"
+
+[sinks.stdout]
+#inputs = ["service_envelope" ]
+inputs = ["deduped_message" ]
+type = "console"
+encoding.codec = "json"

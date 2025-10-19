@@ -20,7 +20,7 @@ in
     natscli nsc nats-top
     unstable.surrealdb
     vector
-    mqttui
+    mqttui mosquitto
     buf protobuf
     (python312.withPackages (ps: with ps; [paho-mqtt protobuf pycryptodome]))
     meshtastic_protobuf
@@ -65,7 +65,7 @@ in
         #nats-top.exec = "sleep 5; nats-top -s 127.0.0.1 -m 8221";
         surrealdb.exec = "SURREAL_CAPS_ALLOW_EXPERIMENTAL=graphql ${unstable.surrealdb}/bin/surreal start --user admin --pass admin --bind 0.0.0.0:8088 rocksdb:./.runtime_data/surrealdb/sarmesh.db";
 	nats-leaf.exec = "${pkgs.nats-server}/bin/nats-server -c ./nats/nats.local.leaf.conf";
-        vector.exec = "cd vector; ${pkgs.vector}/bin/vector --config-toml ./vector.toml";
+        vector.exec = "cd vector; ${pkgs.vector}/bin/vector --config-toml ./vector_test.toml";
       };
 
   # https://devenv.sh/services/

@@ -1,0 +1,29 @@
+services:
+  nats:
+    image: nats:2.12.1
+    ports:
+      - '4222:4222'
+#      - '8222:8222'
+      - '1883:1883'
+    command: "-c /nats/config/standalone.conf --http_port 8222 -store_dir /nats/storage --jetstream --server_name sarmesh01"
+    networks:
+      - 'sarmesh-nats'
+    volumes:
+      - 'sarmesh-nats:/nats/storage'
+      - './nats/:/nats/config/'
+  vector:
+    image: timberio/vector:0.50.0-alpine
+    ports: []
+    working_dir: /vector/config
+    command: "--config /vector/config/vector_docker.toml"
+    networks:
+      - 'sarmesh-nats'
+    volumes:
+      - './vector/:/vector/config/'
+
+volumes:
+  sarmesh-nats:
+
+networks:
+  sarmesh-nats:
+    name: sarmesh-nats
