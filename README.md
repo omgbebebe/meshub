@@ -8,7 +8,15 @@ TBC;
 
 # Deployment
 
-TBD;
+## Docker compose
+You will need to expose port 1883 to the wild internet to allow external nodes to send mqtt messages
+
+```shell
+docker compose up
+```
+
+This will fire-up two containers with NATS and with Vector and starts accept connection from nodes.
+You will find configs for Vector in `vector/vector_docker.toml` and config for NATS in `nats/standalone.conf`.
 
 # Dev shell
 
